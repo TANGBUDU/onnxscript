@@ -624,6 +624,41 @@ class TestConverter(testutils.TestBase):
 
         self.assertEqual(returned_input.to_function_proto().output[0], "return_val")
 
+    def test_returned_input_alias_after_rebinding_input(self):
+        @script(default_opset=op)
+        def returned_alias(X: FLOAT[2]) -> FLOAT[2]:
+            Y = X
+            X = op.Neg(X)
+            return Y
+
+        model = returned_alias.to_model_proto()
+        onnx.checker.check_model(model, full_check=True)
+        self.assertEqual(model.graph.output[0].name, "Y")
+        self.assertEqual(model.graph.node[-1].op_type, "Identity")
+        self.assertEqual(list(model.graph.node[-1].input), ["X"])
+        x = np.array([1.0, -2.0], dtype=np.float32)
+        actual = create_cpu_inference_session(model.SerializeToString()).run(None, {"X": x})
+        np.testing.assert_array_equal(actual[0], x)
+
+    def test_returned_input_alias_name_collision(self):
+        @script(default_opset=op)
+        def returned_alias(X: FLOAT[2], Y: FLOAT[2]) -> (FLOAT[2], FLOAT[2]):
+            Y = X
+            return Y, Y
+
+        model = returned_alias.to_model_proto()
+        onnx.checker.check_model(model, full_check=True)
+        outputs = [value.name for value in model.graph.output]
+        self.assertEqual(len(set(outputs)), 2)
+        self.assertTrue(all(name.startswith("Y_") for name in outputs))
+        self.assertTrue(set(outputs).isdisjoint({"X", "Y"}))
+        x = np.array([1.0, -2.0], dtype=np.float32)
+        actual = create_cpu_inference_session(model.SerializeToString()).run(
+            None, {"X": x, "Y": -x}
+        )
+        for output in actual:
+            np.testing.assert_array_equal(output, x)
+
     def test_bool_attr_promotion(self):
         @script()
         def if_then_else(flag: bool, Y, Z):
