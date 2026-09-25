@@ -419,19 +419,33 @@ def aten_alpha_dropout(input: TensorType, p: float, train: bool) -> TensorType:
     raise NotImplementedError()
 
 
-@torch_op("aten::amax")
-def aten_amax(self: TRealOrUInt8, dim: INT64, keepdim: bool = False) -> TRealOrUInt8:
+@torch_op("aten::amax", trace_only=True)
+def aten_amax(
+    self: TRealOrUInt8, dim: Optional[INT64] = None, keepdim: bool = False
+) -> TRealOrUInt8:
     """amax(Tensor self, int[1] dim=[], bool keepdim=False) -> Tensor"""
 
-    # ReduceMax reduces all dimensions when dim is empty
+    if dim is None:
+        # dim defaults to the empty list in the aten schema, which means reduce every
+        # dimension. noop_with_empty_axes keeps its default of 0, so ReduceMax without
+        # an axes input reduces all of them.
+        return op.ReduceMax(self, keepdims=keepdim)
+    # An explicitly empty dim arrives here and reduces every dimension for the same reason
     return op.ReduceMax(self, dim, keepdims=keepdim)
 
 
-@torch_op("aten::amin")
-def aten_amin(self: TRealOrUInt8, dim: INT64, keepdim: bool = False) -> TRealOrUInt8:
+@torch_op("aten::amin", trace_only=True)
+def aten_amin(
+    self: TRealOrUInt8, dim: Optional[INT64] = None, keepdim: bool = False
+) -> TRealOrUInt8:
     """amin(Tensor self, int[1] dim=[], bool keepdim=False) -> Tensor"""
 
-    # ReduceMin reduces all dimensions when dim is empty
+    if dim is None:
+        # dim defaults to the empty list in the aten schema, which means reduce every
+        # dimension. noop_with_empty_axes keeps its default of 0, so ReduceMin without
+        # an axes input reduces all of them.
+        return op.ReduceMin(self, keepdims=keepdim)
+    # An explicitly empty dim arrives here and reduces every dimension for the same reason
     return op.ReduceMin(self, dim, keepdims=keepdim)
 
 
@@ -8092,6 +8106,16 @@ def aten_pow_tensor_scalar(self: TReal, exponent: float) -> TReal:
 @torch_op("aten::pow.Scalar", trace_only=True)
 def aten_pow_scalar(self: float, exponent: TTensor) -> TTensor:
     """pow.Scalar(Scalar self, Tensor exponent) -> Tensor"""
+    if not isinstance(self, int) and not exponent.dtype.is_floating_point():
+        # A float scalar outranks an integral exponent, so torch promotes the result to
+        # the default float type instead of narrowing the scalar down to the exponent
+        return op.Pow(op.Cast(self, to=FLOAT.dtype), op.Cast(exponent, to=FLOAT.dtype))
+    if exponent.dtype == ir.DataType.BOOL:
+        # Pow has no boolean inputs, and an int scalar over a boolean exponent
+        # promotes to the default int type in torch
+        return op.Pow(op.Cast(self, to=INT64.dtype), op.Cast(exponent, to=INT64.dtype))
+    # The exponent is in the same or a higher type category than the scalar, so it
+    # decides the result type. e.g. 2.0 ** float16 tensor is float16
     return op.Pow(op.Cast(self, to=exponent.dtype), exponent)
 
 
